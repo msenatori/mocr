@@ -1,0 +1,27 @@
+# Secrets — never commit these.
+*.pem
+*.key
+
+# Your settings: organisation, App ID, and the path of every repository you
+# review. The wildcard covers editor backups and copies (config.env~,
+# config.env.bak, config.env.local) that would otherwise be committed in full.
+config.env
+config.env.*
+!config.env.example
+.env
+.env.*
+
+# Editor backups, which hold a full copy of whatever they shadow.
+*~
+*.swp
+
+# The review log — the name of every repository you review. Both the default
+# location and a bare file, in case REVIEW_LOG_DIR points somewhere else.
+reviews/
+reviewed.txt
+
+.DS_Store
+
+# Local tooling state, not part of the project.
+.atl/
+.claude/
