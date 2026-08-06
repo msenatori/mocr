@@ -25,14 +25,14 @@ ignore existing rows, renames that leave callers stale, contract changes without
 their consumers updated, edge cases with no test.
 
 Get the diff with `gh pr diff <pr> --repo <repo>`. For a `stale` row, read your
-previous comment's `sha=` and review only what changed since then.
+previous review and cover only what changed since its commit.
 
 **Decide whether it is worth reviewing at all, first.** Skip a PR outright when
 it is machine-generated (dependency bumps, lockfile-only changes, release-tag
 commits, anything opened by a bot) or when the change is small and obviously
-correct. Post the no-findings comment from Step 3 so it leaves the queue, and
+correct. Post the no-findings review from Step 3 so it leaves the queue, and
 move on. Deciding this before you read the diff closely is cheaper than deciding
-it after you have already drafted a comment you then have to talk yourself out
+it after you have already drafted a finding you then have to talk yourself out
 of.
 
 **One repository per review.** Read only this PR's own `path`. Never open another
@@ -64,7 +64,7 @@ whole comment.
 
 Exclude: lockfiles, `dist/`, `build/`, snapshots, i18n bundles, generated files,
 binaries. If more than 1500 lines remain, review the highest-risk files only and
-say so in the comment.
+say so in the review body.
 
 **A finding has to earn its place. Silence is the default.** Post one only if it
 changes what the author does next. Before writing anything, read the PR title and
@@ -109,7 +109,7 @@ check X" is a reason to go check X, not a disclaimer that earns X a paragraph.
 
 Zero findings is the expected result for a small diff that does what its title
 says. It is a successful run, not a wasted one. Never pad a review to justify
-having run it: one comment that restates the title teaches the author to skip
+having run it: a review that restates the title teaches the author to skip
 every comment that follows it, including the one that would have mattered.
 
 ## Step 3 — Publish
@@ -117,26 +117,47 @@ One review per PR, published in a single call. GitHub stores the commit it was
 written against, and Step 1 reads that back — there is no marker to maintain and
 no comment body to parse.
 
-The review body carries the lead finding. Every other finding is an inline
-comment anchored to the line it is about.
+**Every finding is an inline comment, anchored to the line it is about.** Not a
+paragraph in the body that points at a line — a comment attached to it. That is
+how a human reviews: against the code, where the author can reply in place and
+argue the finding down. A finding in the body is a pronouncement with nowhere to
+answer it; the same finding on the line is a conversation, and a wrong finding
+dies faster there than anywhere else.
 
-Lead with the most important finding as a bold imperative — the change you want,
-not a description of the problem. Then two or three sentences: the mechanism,
-the exact condition that triggers it, the consequence. End on a code block or
-query when there is one.
+Write each one as a bold imperative — the change you want, not a description of
+the problem. Then two or three sentences: the mechanism, the exact condition that
+triggers it, the consequence. End on a code block or query when there is one.
 
-**Anchor each secondary finding inline.** An inline comment takes `path`, `line`
-and `side`. `path` is the path as it appears in the diff, relative to the
-repository root — it is **not** the row's `path`, which is a directory on this
-machine and must never reach GitHub.
+An inline comment takes `path`, `line` and `side`. `path` is the path as it
+appears in the diff, relative to the repository root — it is **not** the row's
+`path`, which is a directory on this machine and must never reach GitHub.
 
 The API rejects a `line` that is not part of the diff. When a finding will not
 anchor to a changed line, treat that as evidence rather than an obstacle: re-read
-"Only what this PR introduced" before deciding it belongs in the body instead.
+"Only what this PR introduced" before deciding it survives at all.
 
-**Keep a permalink in the body for the lead finding.** Inline threads collapse as
-outdated the moment the author rebases; a permalink pinned to the reviewed SHA
-does not. Point at the code with a GitHub blob URL:
+**The body says what you understood, not what you found.** Two or three sentences
+naming the mechanism the change actually introduces — the mental model every
+inline finding below rests on. Its job is to be falsifiable: if you read the
+change wrong, the author sees it in the first paragraph and knows to distrust the
+rest, instead of arguing line by line with a reviewer who was never looking at
+the same thing.
+
+That is not a summary of the PR. Restating the title, listing the files touched,
+or narrating what the diff obviously does is the padding this prompt exists to
+prevent — the author already knows, and it teaches them to skip the body. Write
+the part that was not obvious: what you took the change to mean, the constraint
+you assumed, the path you decided mattered.
+
+Two other things belong in the body, and nothing else does: the scope note when
+the diff was too large to read whole, and a finding severe enough that burying it
+in a diff thread would be a disservice — a leaked credential, data loss, a
+silent-failure path. Those get a bold imperative here **and** their inline
+comment. Everything else that belongs against code belongs only inline.
+
+**Use a permalink only for a finding that cannot anchor.** When the line is not
+in the diff and the finding still survives the rule above, the body is where it
+goes, and there it needs a pointer. Point at the code with a GitHub blob URL:
 
   https://github.com/<repo>/blob/<head>/<file-in-repo>#L<start>-L<end>
 
@@ -153,24 +174,27 @@ and it must be the same SHA the review is filed against, so the link keeps
 pointing at the code you reviewed after the branch moves. Include a line of
 context either side of the line you mean.
 
-No opening praise. No summary of what the PR does. No severity badges, emoji,
-tables, or checklists. No footer. Roll everything minor into one closing
-sentence starting with "Minor:".
+No opening praise. No severity badges, emoji, tables, or checklists. No footer.
+Roll everything minor into one closing sentence starting with "Minor:", inline on
+the line it concerns when it has one and in the body when it does not.
 
 When there is nothing to report, publish the same review with an empty `comments`
-array and a body of exactly:
+array and a body that is the understanding paragraph followed by:
 
 No observations.
 
-Two words. Do not explain what you checked, do not list what you ruled out, do
-not soften it with praise. The review still has to exist: Step 1 reads its
-`commit_id` to decide what needs review, so a PR reviewed with no findings and no
-review stays in the queue and gets reviewed again on every run, crowding out PRs
-nobody has looked at yet. Filing it is the point; the two words are just so it is
-not an empty box.
+Keep the understanding, drop everything else. Do not list what you ruled out, do
+not narrate the files you opened, do not soften it with praise. The two lines do
+different work: the first lets the author judge whether silence means the change
+was read correctly or read wrongly, and without it "No observations" is
+indistinguishable from a run that did nothing. The review still has to exist —
+Step 1 reads its `commit_id`, so a PR reviewed with no findings and no review
+stays in the queue and gets reviewed again on every run, crowding out PRs nobody
+has looked at yet.
 
-Under 150 words. If a second finding is as serious as the first, give it its own
-bold imperative and paragraph; otherwise it is minor.
+Under 200 words across the whole review, body and inline comments together. Each
+finding gets its own comment on its own line; a second one is not a paragraph
+appended to the first.
 
 Build the whole review as one JSON document in a scratch file outside any
 repository — `mktemp` is fine — and post it with `--input`. That is not
@@ -180,7 +204,7 @@ multi-line bodies to `gh` without the shell mangling them.
   {
     "commit_id": "<head>",
     "event": "COMMENT",
-    "body": "<lead finding, permalink, Minor: line>",
+    "body": "<what you understood; scope note; anything too severe to bury>",
     "comments": [
       { "path": "src/x.ts", "line": 42, "side": "RIGHT", "body": "..." }
     ]
