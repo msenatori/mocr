@@ -242,10 +242,13 @@ review_state() {
   # state lives in GitHub's own field instead of a marker we have to parse. A
   # review also lets us anchor findings inline, which a PR-level comment cannot.
   if [ -n "$REVIEW_BOT_LOGIN" ]; then
-    seen="$(gh api "repos/$slug/pulls/$number/reviews?per_page=100" 2>/dev/null \
+    # Paginated and picked by id, not by position: reviews come back oldest
+    # first, so reading one page of a long-lived PR would compare against a
+    # review that is not the newest and re-offer it on every run.
+    seen="$(gh api --paginate --slurp "repos/$slug/pulls/$number/reviews?per_page=100" 2>/dev/null \
             | jq -r --arg login "$REVIEW_BOT_LOGIN" \
-                '[.[] | select((.user.login // "") | sub("\\[bot\\]$"; "") == $login)]
-                 | last | .commit_id // empty' 2>/dev/null)"
+                '[add[] | select((.user.login // "") | sub("\\[bot\\]$"; "") == $login)]
+                 | max_by(.id) | .commit_id // empty' 2>/dev/null)"
     if [ -n "$seen" ]; then
       case "$head" in "$seen"*) echo "current" ;; *) echo "stale" ;; esac
       return
