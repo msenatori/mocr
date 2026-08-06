@@ -39,6 +39,12 @@ of.
 checkout to trace a consumer, not even one the script returned for its own PR.
 The review must be reproducible by the author from the PR alone.
 
+Installed dependencies inside this checkout are part of it. `node_modules/<pkg>/**`,
+vendored code and generated clients are not another repository — the author reads
+the same files from the same PR, so reproducibility holds. When a type, schema,
+constant or enum the diff depends on lives in a package this repo installs,
+resolve it there before treating it as unverifiable.
+
 **Checkouts are not the PR.** Each `path` sits on whatever branch someone left it
 on — usually not this PR's head, sometimes not even the base. The diff is the
 only authoritative statement of what changed. Use the checkout for surrounding
@@ -93,9 +99,13 @@ None of these is a finding:
 - Missing tests, missing docs, or general code quality, unless the change itself
   makes them load-bearing.
 
-Report at most 5 findings, ordered by severity. If you are unsure about a real
-finding, write it as a question and state what you could not verify — that is
-different from padding.
+Report at most 5 findings, ordered by severity.
+
+A question is for uncertainty about **consequence** — you can see the defect, you
+are unsure how far it reaches. It is never for uncertainty about **whether the
+defect exists**. If the trigger condition is unverified, you do not have a finding
+you are unsure about, you have a hypothesis. Resolve it or drop it. "I could not
+check X" is a reason to go check X, not a disclaimer that earns X a paragraph.
 
 Zero findings is the expected result for a small diff that does what its title
 says. It is a successful run, not a wasted one. Never pad a review to justify
@@ -103,18 +113,30 @@ having run it: one comment that restates the title teaches the author to skip
 every comment that follows it, including the one that would have mattered.
 
 ## Step 3 — Publish
-One PR-level comment. Never inline.
+One review per PR, published in a single call. GitHub stores the commit it was
+written against, and Step 1 reads that back — there is no marker to maintain and
+no comment body to parse.
 
-First line, exactly:
-<!-- mocr:v1 sha=<head> -->
+The review body carries the lead finding. Every other finding is an inline
+comment anchored to the line it is about.
 
 Lead with the most important finding as a bold imperative — the change you want,
 not a description of the problem. Then two or three sentences: the mechanism,
 the exact condition that triggers it, the consequence. End on a code block or
 query when there is one.
 
-**Anchor with a permalink, not a line number.** Point at the code with a GitHub
-blob URL:
+**Anchor each secondary finding inline.** An inline comment takes `path`, `line`
+and `side`. `path` is the path as it appears in the diff, relative to the
+repository root — it is **not** the row's `path`, which is a directory on this
+machine and must never reach GitHub.
+
+The API rejects a `line` that is not part of the diff. When a finding will not
+anchor to a changed line, treat that as evidence rather than an obstacle: re-read
+"Only what this PR introduced" before deciding it belongs in the body instead.
+
+**Keep a permalink in the body for the lead finding.** Inline threads collapse as
+outdated the moment the author rebases; a permalink pinned to the reviewed SHA
+does not. Point at the code with a GitHub blob URL:
 
   https://github.com/<repo>/blob/<head>/<file-in-repo>#L<start>-L<end>
 
@@ -127,72 +149,86 @@ appear in a link.
 Three things make it render: the SHA must be the full 40 characters, so take it
 from the JSON `head` and not from a table, which truncates it; it must be written
 out literally, because a substitution like `$(git rev-parse HEAD)` posts as text;
-and it must be the same SHA as the marker, so the link keeps pointing at the code
-you reviewed after the branch moves. Include a line of context either side of the
-line you mean.
+and it must be the same SHA the review is filed against, so the link keeps
+pointing at the code you reviewed after the branch moves. Include a line of
+context either side of the line you mean.
 
 No opening praise. No summary of what the PR does. No severity badges, emoji,
 tables, or checklists. No footer. Roll everything minor into one closing
 sentence starting with "Minor:".
 
-When there is nothing to report, post exactly this and nothing else:
+When there is nothing to report, publish the same review with an empty `comments`
+array and a body of exactly:
 
-<!-- mocr:v1 sha=<head> -->
 No observations.
 
-Two words and the marker. Do not explain what you checked, do not list what you
-ruled out, do not soften it with praise. The comment still has to exist: Step 1
-reads the marker back to decide what needs review, so a PR reviewed with no
-findings and no comment stays in the queue and gets reviewed again on every run,
-crowding out PRs nobody has looked at yet. The marker is the point of that
-comment; the two words are just so it is not an empty box.
+Two words. Do not explain what you checked, do not list what you ruled out, do
+not soften it with praise. The review still has to exist: Step 1 reads its
+`commit_id` to decide what needs review, so a PR reviewed with no findings and no
+review stays in the queue and gets reviewed again on every run, crowding out PRs
+nobody has looked at yet. Filing it is the point; the two words are just so it is
+not an empty box.
 
 Under 150 words. If a second finding is as serious as the first, give it its own
 bold imperative and paragraph; otherwise it is minor.
 
-Write the comment body to a scratch file outside any repository — `mktemp` is
-fine — and post it with `--body-file`. That is not "modifying files" in the sense
-the Forbidden list means; it is how you hand multi-line text to `gh` without the
-shell mangling it.
+Build the whole review as one JSON document in a scratch file outside any
+repository — `mktemp` is fine — and post it with `--input`. That is not
+"modifying files" in the sense the Forbidden list means; it is how you hand
+multi-line bodies to `gh` without the shell mangling them.
+
+  {
+    "commit_id": "<head>",
+    "event": "COMMENT",
+    "body": "<lead finding, permalink, Minor: line>",
+    "comments": [
+      { "path": "src/x.ts", "line": 42, "side": "RIGHT", "body": "..." }
+    ]
+  }
+
+`event` is always `COMMENT` — never `APPROVE`, never `REQUEST_CHANGES`.
+`commit_id` must be the row's full 40-character `head`: that field is what marks
+the PR reviewed at this commit, so a wrong or short SHA means the PR comes back
+on the next run.
 
 Post as the review bot, never as the human account. Mint the token **in the same
 command** that uses it:
 
-  GH_TOKEN="$(bot-token.sh)" gh pr comment <pr> --repo <repo> --body-file <body>
-  GH_TOKEN="$(bot-token.sh)" gh pr comment <pr> --repo <repo> --edit-last --create-if-none --body-file <body>
+  GH_TOKEN="$(bot-token.sh)" gh api repos/<repo>/pulls/<pr>/reviews \
+    --method POST --input <json>
 
 Do not split that into two commands. Assigning `TOKEN=` in one shell invocation
 and using `$TOKEN` in the next loses it — most agents run each command in a fresh
 shell — and an empty `GH_TOKEN` does not fail: `gh` falls back to the human's
-stored credentials and the comment posts under their name. Do not work around
+stored credentials and the review posts under their name. Do not work around
 that by printing the token and pasting the value either; that writes a live
 credential into the conversation.
 
-Use the `--edit-last` form for a `stale` row: read your previous comment, keep
-the findings that still apply, add only what is new, and update the `sha=` in the
-marker to the current head. `--create-if-none` covers the case where the marker
-was posted by a different account, so the edit cannot fail for having nothing to
-edit.
+For a `stale` row, read your previous review — its body from
+`gh api repos/<repo>/pulls/<pr>/reviews` and its inline comments from
+`gh api repos/<repo>/pulls/<pr>/comments` — keep the findings that still apply,
+add only what is new, and file a **new** review against the current head. Reviews
+are not edited; the newest one for your login is the one Step 1 reads.
 
 If bot-token.sh fails, stop and report it. Never fall back to the default
 account — a review posted under the human's name is worse than no review.
 
-After the comment is posted, and only then, record it:
+After the review is posted, and only then, record it:
 
   LOG_DIR="$(prs.sh --log-dir)"
   [ -n "$LOG_DIR" ] && mkdir -p "$LOG_DIR" \
     && echo "<repo>#<pr>" >> "$LOG_DIR/reviewed.txt"
 
-Never read this file back. It is a record, not a source of truth: the marker on
-GitHub is the only thing that decides what gets reviewed.
+Never read this file back. It is a record, not a source of truth: the `commit_id`
+of your last review on GitHub is the only thing that decides what gets reviewed.
 
 ## Forbidden
-- Modifying any repository: no edits, commits, or pushes. Writing the comment
-  body to a scratch file outside the checkouts is not that.
-- `gh pr review`, approving, or requesting changes. Comments only.
-- Inline comments. PR-level only.
+- Modifying any repository: no edits, commits, or pushes. Writing the review
+  JSON to a scratch file outside the checkouts is not that.
+- Approving or requesting changes. `event` is always `COMMENT`.
 - Inventing findings to fill space. Zero is a legitimate result.
 - Any repository not returned by the script in Step 1.
-- Any checkout other than the `path` of the PR being reviewed.
-- Skipping a PR from memory. The marker on GitHub decides what is reviewed, and
-  it is the only thing that does. You keep no state between runs.
+- Any checkout other than the `path` of the PR being reviewed. Packages that
+  checkout installs are part of it, not another repository.
+- Skipping a PR from memory. The `commit_id` of your last review decides what is
+  reviewed, and it is the only thing that does. You keep no state between runs.
