@@ -251,8 +251,10 @@ multi-line bodies to `gh` without the shell mangling them.
     "event": "COMMENT",
     "body": "<what the PR does; a diagram when it earns one>",
     "comments": [
-      { "path": "src/x.ts", "line": 42, "side": "RIGHT", "body": "...```suggestion" },
-      { "path": "src/y.ts", "start_line": 10, "line": 14, "side": "RIGHT", "body": "..." }
+      { "path": "src/x.ts", "line": 42, "side": "RIGHT",
+        "body": "<one sentence>\n\n```suggestion\n<replacement for line 42>\n```" },
+      { "path": "src/y.ts", "start_line": 10, "line": 14, "side": "RIGHT",
+        "body": "<a question, ending in a question mark?>" }
     ]
   }
 

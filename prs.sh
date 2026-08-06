@@ -247,7 +247,8 @@ review_state() {
     # review that is not the newest and re-offer it on every run.
     seen="$(gh api --paginate --slurp "repos/$slug/pulls/$number/reviews?per_page=100" 2>/dev/null \
             | jq -r --arg login "$REVIEW_BOT_LOGIN" \
-                '[add[] | select((.user.login // "") | sub("\\[bot\\]$"; "") == $login)]
+                'def bare: sub("\\[bot\\]$"; "");
+                 [add[] | select((.user.login // "") | bare == ($login | bare))]
                  | max_by(.id) | .commit_id // empty' 2>/dev/null)"
     if [ -n "$seen" ]; then
       case "$head" in "$seen"*) echo "current" ;; *) echo "stale" ;; esac
