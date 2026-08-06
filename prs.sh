@@ -8,7 +8,7 @@
 #   ./prs.sh -u -j        # same, as JSON — what the review prompt consumes
 #
 # Options:
-#   -c, --check-reviewed   look for a review marker and compare it to HEAD
+#   -c, --check-reviewed   compare our last review's commit against HEAD
 #   -u, --unreviewed       keep only PRs needing review (none|stale). Implies -c
 #   -d, --days N           only PRs updated in the last N days
 #   -n, --limit N          at most N results
@@ -30,14 +30,14 @@
 #   PR       pull request number
 #   AUTHOR   who opened it
 #   HEAD     short head SHA
-#   REVIEW   with -c/-u: none | current | stale  (marker vs. head SHA)
+#   REVIEW   with -c/-u: none | current | stale  (reviewed SHA vs. head SHA)
 #   TITLE    pull request title
 #
 # Several checkouts can be worktrees of the same GitHub repo (e.g. `api` and
 # `api-hotfix`). They are deduplicated by remote URL and queried once.
 #
 # Filters are applied cheapest-first: --days and --skip-drafts run before the
-# per-PR marker lookup, so --unreviewed never pays for PRs already excluded.
+# per-PR review lookup, so --unreviewed never pays for PRs already excluded.
 #
 # Requires: gh (authenticated), jq.
 
@@ -111,6 +111,14 @@ if [ ! -t 1 ] || $AS_JSON; then
 fi
 
 MARKER_PREFIX="<!-- mocr:v1"
+
+# Without a login there is no way to recognize our own review, so every PR falls
+# back to the legacy marker — which new reviews no longer write. Say so loudly:
+# silently re-reviewing everything on every run is the expensive failure here.
+if $CHECK_REVIEWED && [ -z "$REVIEW_BOT_LOGIN" ]; then
+  echo "warning: REVIEW_BOT_LOGIN is unset — falling back to the legacy comment marker." >&2
+  echo "         PRs reviewed since the switch will be offered again on every run." >&2
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -229,6 +237,28 @@ $SKIP_DRAFTS && { jq 'map(select(.isDraft | not))' "$TMP/all.json" > "$TMP/f" &&
 # ---------------------------------------------------------------------------
 review_state() {
   slug="$1"; number="$2"; head="$3"
+
+  # Preferred: our own review carries the commit it was written against, so the
+  # state lives in GitHub's own field instead of a marker we have to parse. A
+  # review also lets us anchor findings inline, which a PR-level comment cannot.
+  if [ -n "$REVIEW_BOT_LOGIN" ]; then
+    # Paginated and picked by id, not by position: reviews come back oldest
+    # first, so reading one page of a long-lived PR would compare against a
+    # review that is not the newest and re-offer it on every run.
+    seen="$(gh api --paginate --slurp "repos/$slug/pulls/$number/reviews?per_page=100" 2>/dev/null \
+            | jq -r --arg login "$REVIEW_BOT_LOGIN" \
+                'def bare: sub("\\[bot\\]$"; "");
+                 [add[] | select((.user.login // "") | bare == ($login | bare))]
+                 | max_by(.id) | .commit_id // empty' 2>/dev/null)"
+    if [ -n "$seen" ]; then
+      case "$head" in "$seen"*) echo "current" ;; *) echo "stale" ;; esac
+      return
+    fi
+  fi
+
+  # Fallback: the pre-reviews-API marker in a PR-level comment. Kept so PRs
+  # reviewed before the switch are not all re-reviewed once; drop it when no
+  # open PR still carries a marker.
   body="$(gh pr view "$number" --repo "$slug" --json comments \
           --jq '[.comments[].body | select(startswith("'"$MARKER_PREFIX"'"))] | last // ""' \
           2>/dev/null)"
