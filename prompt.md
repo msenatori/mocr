@@ -168,21 +168,32 @@ reviewer who was never looking at the same thing.
 Never narrate the review itself. No line counts, no list of files opened, no
 "I focused on…". That is process, and the author did not ask what it cost you.
 
-**When the change is hard to hold in your head, draw it.** A control flow with
-several branches, a state machine, a multi-service handoff, an ordering that
-matters — those are understood faster as a picture than as a paragraph. GitHub
-renders Mermaid in a review body:
+**A diagram is a finding too: the default is not to draw one.** GitHub renders
+Mermaid in a review body, which makes it cheap to add and therefore easy to
+overuse. Decide deliberately, and decide twice — whether, and which.
 
-    ```mermaid
-    flowchart LR
-      A[shipments] -->|origin_dc != RDL| B[Ingram: CDFL + SFTP]
-      A -->|origin_dc == RDL| C[ReaderLink: SalesOrder XML]
-      B --> D[PO file per branch]
-      C --> D
-    ```
+*Whether.* Draw only when the change has three or more branches, states or
+participants **whose relationships are the point**, and when the picture answers
+something the same three sentences of prose cannot. Then apply the test that
+settles it: delete the diagram and reread the body. If nothing was lost, it was
+decoration, and decoration costs the same scan time as substance. A linear
+change, a renamed field, a new flag with two paths — never.
 
-Draw only what the prose cannot carry. A diagram of a two-step function is
-decoration, and decoration costs the same scan time as substance.
+Draw the change, never the system. An architecture diagram of code this PR did
+not touch is the same padding as a finding on lines it did not touch.
+
+*Which.* The shape of the change picks the type, not habit:
+
+| What changed | Type |
+|---|---|
+| Branching control flow, routing, a decision tree | `flowchart` |
+| A lifecycle: statuses, transitions, who moves what | `stateDiagram-v2` |
+| An ordering across services, callers or a webhook round trip | `sequenceDiagram` |
+| Schema: new tables, relations, cardinality | `erDiagram` |
+
+Choosing wrong wastes the reader twice — once reading the picture, once
+translating it. A status machine drawn as a `flowchart` is the common mistake:
+if the boxes are states rather than steps, it is a `stateDiagram-v2`.
 
 Two other things belong in the body, and nothing else does: the areas you left
 unread on an oversized diff, and a finding severe enough that burying it in a
@@ -227,7 +238,7 @@ stays in the queue and gets reviewed again on every run, crowding out PRs nobody
 has looked at yet.
 
 No inline comment runs past three sentences plus its suggestion block, and the
-body past five plus a diagram. Each finding gets its own comment on its own line;
+body past five plus at most one diagram. Each finding gets its own comment on its own line;
 a second one is not a paragraph appended to the first.
 
 Build the whole review as one JSON document in a scratch file outside any
