@@ -64,7 +64,9 @@ whole comment.
 
 Exclude: lockfiles, `dist/`, `build/`, snapshots, i18n bundles, generated files,
 binaries. If more than 1500 lines remain, review the highest-risk files only and
-say so in the review body.
+name the areas you left unread in the body — which subsystems, never how many
+lines. The author needs to know what was not looked at; the size of the diff is
+something they can already see.
 
 **A finding has to earn its place. Silence is the default.** Post one only if it
 changes what the author does next. Before writing anything, read the PR title and
@@ -124,9 +126,29 @@ argue the finding down. A finding in the body is a pronouncement with nowhere to
 answer it; the same finding on the line is a conversation, and a wrong finding
 dies faster there than anywhere else.
 
-Write each one as a bold imperative — the change you want, not a description of
-the problem. Then two or three sentences: the mechanism, the exact condition that
-triggers it, the consequence. End on a code block or query when there is one.
+**Write to be scanned, not read.** The author is moving through a diff and stops
+at your comment. They need to know what is wrong and what to do in the time it
+takes to read two sentences, then keep moving. Every comment is one of two
+shapes:
+
+*A change you want* — a `suggestion` block, so it applies with one click. Lead
+with one sentence saying what breaks and when. Then:
+
+    ```suggestion
+    if (claim.count !== group.orderPaymentIds.length) return { ...base, status: "skipped" };
+    ```
+
+The block replaces the anchored line, so its content must be the complete
+replacement for that line, correctly indented. To replace a range, set
+`start_line` alongside `line` on the comment.
+
+*Something you do not know* — an actual question, ending in a question mark. Not
+"consider whether", not a statement with a hedge stapled to it. Ask the one thing
+whose answer changes the outcome, and say what you could not check.
+
+Do not explain the mechanism twice, do not restate what the diff shows, do not
+narrate what you read to get there. If a comment needs a paragraph of setup to
+land, the finding is not ready.
 
 An inline comment takes `path`, `line` and `side`. `path` is the path as it
 appears in the diff, relative to the repository root — it is **not** the row's
@@ -136,24 +158,36 @@ The API rejects a `line` that is not part of the diff. When a finding will not
 anchor to a changed line, treat that as evidence rather than an obstacle: re-read
 "Only what this PR introduced" before deciding it survives at all.
 
-**The body says what you understood, not what you found.** Two or three sentences
-naming the mechanism the change actually introduces — the mental model every
-inline finding below rests on. Its job is to be falsifiable: if you read the
-change wrong, the author sees it in the first paragraph and knows to distrust the
-rest, instead of arguing line by line with a reviewer who was never looking at
-the same thing.
+**The body is what the PR does, in your words.** Two or three sentences: the
+mechanism the change introduces, the path that carries the risk, the constraint
+it assumes. It is the reading every inline finding rests on, and its job is to be
+falsifiable — if you understood the change wrong, the author sees it in the first
+paragraph and knows to distrust the rest, instead of arguing line by line with a
+reviewer who was never looking at the same thing.
 
-That is not a summary of the PR. Restating the title, listing the files touched,
-or narrating what the diff obviously does is the padding this prompt exists to
-prevent — the author already knows, and it teaches them to skip the body. Write
-the part that was not obvious: what you took the change to mean, the constraint
-you assumed, the path you decided mattered.
+Never narrate the review itself. No line counts, no list of files opened, no
+"I focused on…". That is process, and the author did not ask what it cost you.
 
-Two other things belong in the body, and nothing else does: the scope note when
-the diff was too large to read whole, and a finding severe enough that burying it
-in a diff thread would be a disservice — a leaked credential, data loss, a
-silent-failure path. Those get a bold imperative here **and** their inline
-comment. Everything else that belongs against code belongs only inline.
+**When the change is hard to hold in your head, draw it.** A control flow with
+several branches, a state machine, a multi-service handoff, an ordering that
+matters — those are understood faster as a picture than as a paragraph. GitHub
+renders Mermaid in a review body:
+
+    ```mermaid
+    flowchart LR
+      A[shipments] -->|origin_dc != RDL| B[Ingram: CDFL + SFTP]
+      A -->|origin_dc == RDL| C[ReaderLink: SalesOrder XML]
+      B --> D[PO file per branch]
+      C --> D
+    ```
+
+Draw only what the prose cannot carry. A diagram of a two-step function is
+decoration, and decoration costs the same scan time as substance.
+
+Two other things belong in the body, and nothing else does: the areas you left
+unread on an oversized diff, and a finding severe enough that burying it in a
+diff thread would be a disservice — a leaked credential, data loss, a
+silent-failure path. Those get one line here **and** their inline comment.
 
 **Use a permalink only for a finding that cannot anchor.** When the line is not
 in the diff and the finding still survives the rule above, the body is where it
@@ -179,22 +213,22 @@ Roll everything minor into one closing sentence starting with "Minor:", inline o
 the line it concerns when it has one and in the body when it does not.
 
 When there is nothing to report, publish the same review with an empty `comments`
-array and a body that is the understanding paragraph followed by:
+array and a body that is the summary followed by:
 
 No observations.
 
-Keep the understanding, drop everything else. Do not list what you ruled out, do
-not narrate the files you opened, do not soften it with praise. The two lines do
-different work: the first lets the author judge whether silence means the change
-was read correctly or read wrongly, and without it "No observations" is
+Keep the summary, drop everything else. Do not list what you ruled out, do not
+narrate the files you opened, do not soften it with praise. The two parts do
+different work: the summary lets the author judge whether silence means the
+change was read correctly or read wrongly, and without it "No observations" is
 indistinguishable from a run that did nothing. The review still has to exist —
 Step 1 reads its `commit_id`, so a PR reviewed with no findings and no review
 stays in the queue and gets reviewed again on every run, crowding out PRs nobody
 has looked at yet.
 
-Under 200 words across the whole review, body and inline comments together. Each
-finding gets its own comment on its own line; a second one is not a paragraph
-appended to the first.
+No inline comment runs past three sentences plus its suggestion block, and the
+body past five plus a diagram. Each finding gets its own comment on its own line;
+a second one is not a paragraph appended to the first.
 
 Build the whole review as one JSON document in a scratch file outside any
 repository — `mktemp` is fine — and post it with `--input`. That is not
@@ -204,9 +238,10 @@ multi-line bodies to `gh` without the shell mangling them.
   {
     "commit_id": "<head>",
     "event": "COMMENT",
-    "body": "<what you understood; scope note; anything too severe to bury>",
+    "body": "<what the PR does; a diagram when it earns one>",
     "comments": [
-      { "path": "src/x.ts", "line": 42, "side": "RIGHT", "body": "..." }
+      { "path": "src/x.ts", "line": 42, "side": "RIGHT", "body": "...```suggestion" },
+      { "path": "src/y.ts", "start_line": 10, "line": 14, "side": "RIGHT", "body": "..." }
     ]
   }
 
