@@ -22,7 +22,10 @@ empty on the very first run, say so rather than reporting success.
 Work from `path`, not just the diff. Read the call sites, definitions, and tests
 the change touches. The value is in what the diff does NOT show: migrations that
 ignore existing rows, renames that leave callers stale, contract changes without
-their consumers updated, edge cases with no test.
+their consumers updated, edge cases with no test, and comparisons where one side
+is normalized and the other is not — a value trimmed, lowercased or stripped
+where it is read but not where it is configured matches nothing, and nothing is
+a state most code mistakes for "not found".
 
 Get the diff with `gh pr diff <pr> --repo <repo>`. For a `stale` row, read your
 previous review and cover only what changed since its commit.
@@ -61,6 +64,12 @@ field removed, renamed, retyped, or made required. Never for a changed default,
 an added optional field, or anything else additive. A disclaimer that fits every
 schema change is boilerplate, and boilerplate teaches the author to skip the
 whole comment.
+
+Do not skip a file because it is not code. Anything that gets copied verbatim is
+executable surface: `.env.example`, templates, fixtures, snippets inside docs,
+instruction files a model will follow literally. A broken example is a defect
+with a delay on it — it works until someone uses it as it was meant to be used.
+Skip a file when nothing in it is load-bearing, never because of its extension.
 
 Exclude: lockfiles, `dist/`, `build/`, snapshots, i18n bundles, generated files,
 binaries. If more than 1500 lines remain, review the highest-risk files only and
@@ -101,7 +110,11 @@ None of these is a finding:
 - Missing tests, missing docs, or general code quality, unless the change itself
   makes them load-bearing.
 
-Report at most 5 findings, ordered by severity.
+Report at most 5 findings, ordered by severity. Rank a failure that is silent
+above a louder one with the same blast radius: a crash, a 500 or a red test gets
+found by whoever hits it next, while a wrong value written quietly, a branch that
+skips without a log, or a guard that a plausible input walks straight past can
+run for months. Silence is what makes a defect expensive, not size.
 
 A question is for uncertainty about **consequence** — you can see the defect, you
 are unsure how far it reaches. It is never for uncertainty about **whether the
@@ -133,6 +146,14 @@ shapes:
 
 *A change you want* — a `suggestion` block, so it applies with one click. Lead
 with one sentence saying what breaks and when. Then:
+
+**Never offer a suggestion you have not run.** One click and it is in the branch,
+with the author's trust behind it and no second look. If it calls an API, check
+the shape it returns; if it is a shell pipeline, run it; if it is a query, execute
+it. A suggestion is the only thing in a review that skips the author's judgment,
+so it is the only thing that must be right before it is written. When you know
+what is wrong but not exactly what replaces the line, that is a question, not a
+suggestion.
 
     ```suggestion
     if (claim.count !== group.orderPaymentIds.length) return { ...base, status: "skipped" };
@@ -219,7 +240,12 @@ and it must be the same SHA the review is filed against, so the link keeps
 pointing at the code you reviewed after the branch moves. Include a line of
 context either side of the line you mean.
 
-No opening praise. No severity badges, emoji, tables, or checklists. No footer.
+No opening praise. No severity badges, emoji, tables, or checklists. No footer,
+no links to your own documentation, no count of files reviewed, no table naming
+each file and what it does. That last one reads like diligence and is the
+opposite: the author wrote those files, and a reviewer who spends the body
+proving it read them is spending the author's attention to reassure itself.
+
 Roll everything minor into one closing sentence starting with "Minor:", inline on
 the line it concerns when it has one and in the body when it does not.
 
