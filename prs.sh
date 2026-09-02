@@ -15,15 +15,24 @@
 #   -R, --random           pick from the queue at random (default)
 #   -O, --oldest           pick the least recently updated first
 #   -D, --skip-drafts      drop draft PRs
-#   -A, --all              ignore every filter (days, limit, drafts)
+#   -a, --ignore-authors L skip PRs opened by these logins (comma-separated)
+#   -L, --ignore-labels L  skip PRs carrying any of these labels (comma-separated)
+#   -T, --ignore-title RE  skip PRs whose title matches this regex
+#   -A, --all              ignore every filter (days, limit, drafts, ignores)
 #   -r, --repos-dir DIR    scan DIR for checkouts, ignoring REVIEW_REPO_* vars
 #   -j, --json             emit JSON instead of a table
 #       --log-dir          print where reviews are logged, then exit
 #
 # Repositories come from config.env: either explicit REVIEW_REPO_<NAME>=path
 # variables, or — when none is set — a scan of REVIEW_REPOS. Filter defaults
-# (REVIEW_DAYS, REVIEW_LIMIT, REVIEW_ORDER, REVIEW_SKIP_DRAFTS) also live there;
-# flags win.
+# (REVIEW_DAYS, REVIEW_LIMIT, REVIEW_ORDER, REVIEW_SKIP_DRAFTS,
+# REVIEW_IGNORE_AUTHORS, REVIEW_IGNORE_LABELS, REVIEW_IGNORE_TITLE) also live
+# there; flags win.
+#
+# The three ignore filters exist so a PR nobody wants reviewed never costs an
+# agent turn. Telling the reviewer to skip dependency bumps works, but only after
+# it has already been handed the row, read the diff and decided — the filter is
+# the same judgement made once, for free, before anything is spent on it.
 #
 # Columns:
 #   PROJECT  repo name on GitHub (owner/name is deduplicated across worktrees)
@@ -70,13 +79,20 @@ LIMIT="$REVIEW_LIMIT"
 ORDER="$REVIEW_ORDER"
 SKIP_DRAFTS=false
 [ "$REVIEW_SKIP_DRAFTS" = "true" ] && SKIP_DRAFTS=true
+IGNORE_AUTHORS="$REVIEW_IGNORE_AUTHORS"
+IGNORE_LABELS="$REVIEW_IGNORE_LABELS"
+IGNORE_TITLE="$REVIEW_IGNORE_TITLE"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     -c|--check-reviewed) CHECK_REVIEWED=true ;;
     -u|--unreviewed)     UNREVIEWED_ONLY=true; CHECK_REVIEWED=true ;;
     -D|--skip-drafts)    SKIP_DRAFTS=true ;;
-    -A|--all)            DAYS=""; LIMIT=""; SKIP_DRAFTS=false ;;
+    -A|--all)            DAYS=""; LIMIT=""; SKIP_DRAFTS=false
+                         IGNORE_AUTHORS=""; IGNORE_LABELS=""; IGNORE_TITLE="" ;;
+    -a|--ignore-authors) shift; [ $# -gt 0 ] || { echo "--ignore-authors needs a value" >&2; exit 2; }; IGNORE_AUTHORS="$1" ;;
+    -L|--ignore-labels)  shift; [ $# -gt 0 ] || { echo "--ignore-labels needs a value" >&2; exit 2; }; IGNORE_LABELS="$1" ;;
+    -T|--ignore-title)   shift; [ $# -gt 0 ] || { echo "--ignore-title needs a value" >&2; exit 2; }; IGNORE_TITLE="$1" ;;
     -j|--json)           AS_JSON=true ;;
     -d|--days)           shift; [ $# -gt 0 ] || { echo "--days needs a value" >&2; exit 2; }; DAYS="$1" ;;
     -n|--limit)          shift; [ $# -gt 0 ] || { echo "--limit needs a value" >&2; exit 2; }; LIMIT="$1" ;;
@@ -202,11 +218,12 @@ while IFS="$(printf '\t')" read -r slug dir; do
   i=$((i + 1))
   (
     gh pr list --repo "$slug" --state open \
-       --json number,title,author,headRefOid,isDraft,updatedAt 2>/dev/null \
+       --json number,title,author,headRefOid,isDraft,updatedAt,labels 2>/dev/null \
     | jq --arg repo "$slug" --arg path "$dir" 'map({
         repo: $repo, pr: .number, title: .title,
         author: (.author.login // "?"), head: .headRefOid,
         isDraft: .isDraft, updatedAt: .updatedAt,
+        labels: [ (.labels // [])[].name ],
         path: $path, review: "skipped"
       })' 2>/dev/null > "$TMP/prs.$i" || echo "[]" > "$TMP/prs.$i"
   ) &
@@ -231,6 +248,47 @@ if [ -n "$DAYS" ]; then
 fi
 
 $SKIP_DRAFTS && { jq 'map(select(.isDraft | not))' "$TMP/all.json" > "$TMP/f" && mv "$TMP/f" "$TMP/all.json"; }
+
+# Split a comma-separated config value into a lowercased jq array, dropping
+# surrounding whitespace so `a, b` and `a,b` behave the same.
+_ignore_list() {
+  printf '%s' "$1" | jq -R 'ascii_downcase | split(",")
+    | map(sub("^\\s+";"") | sub("\\s+$";""))
+    | map(select(length > 0))'
+}
+
+if [ -n "$IGNORE_AUTHORS" ]; then
+  # Compared without the `[bot]` suffix on either side: the same account is
+  # `renovate` in some payloads and `renovate[bot]` in others, and a config that
+  # silently matches neither is worse than no filter at all.
+  jq --argjson ign "$(_ignore_list "$IGNORE_AUTHORS")" \
+     'map(select(((.author // "") | ascii_downcase | sub("\\[bot\\]$";""))
+                 as $a | ($ign | map(sub("\\[bot\\]$";"")) | index($a)) | not))' \
+     "$TMP/all.json" > "$TMP/f" && mv "$TMP/f" "$TMP/all.json"
+fi
+
+if [ -n "$IGNORE_LABELS" ]; then
+  # Any one matching label drops the PR. `any` over an empty list is false, so a
+  # PR carrying no labels is kept rather than swallowed.
+  jq --argjson ign "$(_ignore_list "$IGNORE_LABELS")" \
+     'map(select([ (.labels // [])[] | ascii_downcase ]
+                 | map(. as $l | $ign | index($l)) | any | not))' \
+     "$TMP/all.json" > "$TMP/f" && mv "$TMP/f" "$TMP/all.json"
+fi
+
+if [ -n "$IGNORE_TITLE" ]; then
+  # An unanchored, case-insensitive match, so `^\[Auto\]|^chore\(deps\)` reads
+  # the way it looks. A bad pattern makes jq exit non-zero: say so and keep the
+  # unfiltered queue, because silently reviewing nothing looks identical to
+  # having nothing to review.
+  if jq --arg re "$IGNORE_TITLE" \
+       'map(select((.title // "") | test($re; "i") | not))' \
+       "$TMP/all.json" > "$TMP/f" 2>/dev/null; then
+    mv "$TMP/f" "$TMP/all.json"
+  else
+    echo "warning: REVIEW_IGNORE_TITLE is not a valid regex; ignoring it: $IGNORE_TITLE" >&2
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Marker lookup: does our own review comment exist, and is it current?

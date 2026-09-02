@@ -57,6 +57,7 @@ Steps 1 to 4 are done once and take about twenty minutes, most of it the App.
 - [Everyday use](#everyday-use) — the flags you will actually type
 - [Which repositories get reviewed](#which-repositories-get-reviewed) — explicit or scanned
 - [How much gets reviewed per run](#how-much-gets-reviewed-per-run) — one at a time, at random
+- [Pull requests that are never worth a run](#pull-requests-that-are-never-worth-a-run) — dropping bot noise before it costs a tick
 - [The review log](#the-review-log) — a list of what it has reviewed
 - [How deduplication works](#how-deduplication-works) — the marker, and why there is no database
 - [Posting identity](#posting-identity) — creating the GitHub App
@@ -313,6 +314,31 @@ backlog in order matters more to you than variety.
 prs.sh -u -R      # random, overriding config.env for this run
 prs.sh -u -O      # oldest first, overriding config.env for this run
 prs.sh -u -n 3    # three this run
+```
+
+## Pull requests that are never worth a run
+
+With `REVIEW_LIMIT=1`, a dependency bump picked out of the queue costs you the
+whole tick. The prompt already tells the reviewer to skip machine-generated pull
+requests, but it can only do that after it has been handed the row and read the
+diff — the run is spent either way.
+
+Three filters in `config.env` drop them before that, for free:
+
+```sh
+REVIEW_IGNORE_AUTHORS=dependabot,renovate   # logins; the [bot] suffix is optional
+REVIEW_IGNORE_LABELS=dependencies,no-review # any one match drops the PR
+REVIEW_IGNORE_TITLE=^(chore\(deps\)|\[Auto\]) # one case-insensitive regex
+```
+
+All three are empty by default, because what counts as noise is a property of
+your repositories and a guessed default that silently drops a real pull request
+costs more than the runs it saves. `prs.sh -A` ignores them along with every
+other filter, which is how you check what they are hiding:
+
+```sh
+prs.sh -A                    # everything, no filters at all
+prs.sh -u -a dependabot      # override just this run
 ```
 
 ## The review log
