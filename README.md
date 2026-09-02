@@ -341,16 +341,22 @@ two disagree.
 
 ## How deduplication works
 
-Every posted comment starts with a hidden marker:
+Nothing is parsed and no marker is written. GitHub already stores the commit each
+review was filed against, so `prs.sh -c` reads that field back off the newest
+review published by `REVIEW_BOT_LOGIN` and reports `none`, `stale` (reviewed at
+an older commit), or `current`.
 
-```html
-<!-- mocr:v1 sha=<head> -->
-```
+That is why `REVIEW_BOT_LOGIN` matters: without knowing whose review to look for
+there is no field to read, and every pull request would be offered again on every
+run. `prs.sh` warns on stderr when it is unset rather than failing quietly.
 
-`prs.sh -c` reads it back and reports `none`, `stale` (reviewed at an older
-commit), or `current`. **GitHub is the only state store** — no local database, no
-cache. That survives running from another machine or a fresh clone, and it
-self-heals if someone deletes a comment.
+**GitHub is the only state store** — no local database, no cache. That survives
+running from another machine or a fresh clone, and it self-heals if someone
+deletes a review: the pull request is simply unreviewed again.
+
+Reviews published before this switch carried a hidden `<!-- mocr:v1 sha=... -->`
+marker in a PR-level comment. `prs.sh` still falls back to reading it so those
+pull requests are not all reviewed a second time, but nothing writes it any more.
 
 ## Posting identity
 
