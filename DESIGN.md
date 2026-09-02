@@ -112,6 +112,39 @@ is meant to, and its output format — a numbered `Found N issues:` list with a
 footer and reaction prompt, which reads as tool output and is the opposite of
 what the comment style here is tuned for.
 
+`qodo-ai/pr-agent` (MIT) solves it as software rather than as a prompt, which
+makes it the better place to steal from: its decisions are written down as code
+that had to work. Four of them are here, all as rules:
+
+- **Scoring is its own pass** (Step 3). Its docs state the reason plainly —
+  models "struggle to simultaneously generate high-quality code suggestions and
+  rank them well in a single pass." This prompt already filtered candidates while
+  drafting them, which is the same conflation. The other half of that idea is
+  that findings get scored *together*, because worth is relative: judged alone,
+  almost anything clears the bar. The Anthropic plugin also filters on a score,
+  but folded into one pass; the separation is what is borrowed here.
+- **Degrade an oversized diff in a fixed order** rather than sampling it —
+  deletion-only hunks, then whole deleted files, then everything outside the
+  repo's dominant languages. "Review the highest-risk files" was the old rule and
+  it gave the reviewer no way to decide which those were.
+- **Asymmetric context**: expand to the enclosing function above a hunk, barely
+  anything below it. Its config is literally `patch_extra_lines_before = 5` and
+  `patch_extra_lines_after = 1`, which is a claim about where correctness is
+  decided, and it matches what reading diffs is actually like.
+- **Read the repo's convention files from the default branch, never the PR
+  branch.** In pr-agent this is `repo_context_from_default_branch = true`, a
+  configuration flag. Here it is a rule in the Forbidden list, because the threat
+  is worse for an agent than for a library: a pull request that edits `AGENTS.md`
+  can otherwise instruct the thing reviewing it.
+
+Deliberately not taken: its SHA-256 fingerprinting of inline comments
+(`inline_comment_dedup.py`), which exists because a program cannot read its own
+previous comments and tell whether a new finding is the same defect. An agent
+can, and Step 4 already tells it to. What ported is the observation behind the
+machinery — that a model restates one finding two ways across runs, same defect
+in new prose or same prose with a different suggestion — which is now the rule
+for what counts as "already said" on a `stale` row.
+
 ## Tuning notes
 
 - **Silence is the default.** Zero findings on a small, correct pull request is
