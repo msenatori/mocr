@@ -53,7 +53,7 @@ Steps 1 to 4 are done once and take about twenty minutes, most of it the App.
 
 - [Requirements](#requirements) — what you need before you start
 - [Install](#install) — the six steps, in order
-- [Leaving it running](#leaving-it-running) — the loop, and how to pick an interval
+- [Leaving it running](#leaving-it-running) — the loop, and how to pick an interval; [headless with Codex](examples/headless-codex/)
 - [Everyday use](#everyday-use) — the flags you will actually type
 - [Which repositories get reviewed](#which-repositories-get-reviewed) — explicit or scanned
 - [How much gets reviewed per run](#how-much-gets-reviewed-per-run) — one at a time, at random
@@ -244,6 +244,11 @@ each one finds `config.env` next to its own real file.
 
 `prompt.md` deliberately does not loop itself. The reasoning is in
 [DESIGN](DESIGN.md#why-the-prompt-does-not-loop-itself).
+
+To run it with nobody at the console — a cron entry on a server, Codex as the
+agent, a second model checking every finding and suggestion before anything is
+posted — see [examples/headless-codex](examples/headless-codex/). It is an
+example, not a dependency: copy what fits.
 
 ### Choosing the interval
 
