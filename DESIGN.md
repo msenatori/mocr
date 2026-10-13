@@ -22,49 +22,59 @@ it would have said.
 
 ## Why GitHub is the only state store
 
-The marker in each posted comment is the entire record of what has been reviewed.
-There is no database and no cache, so every run pays for the lookup: one list
-call per repository, plus one call per pull request that survives the `--days`
-and draft filters. You cannot pick an unreviewed pull request without first
-learning which ones are unreviewed, and the answer lives on GitHub.
+The `commit_id` of our own last review is the entire record of what has been
+reviewed. There is no database and no cache, so every run pays for the lookup:
+one list call per repository, plus one call per pull request that survives the
+`--days`, draft and ignore filters. You cannot pick an unreviewed pull request
+without first learning which ones are unreviewed, and the answer lives on GitHub.
+
+Nothing is parsed to get it. GitHub already stores the commit a review was
+written against, so the state is a field rather than a marker in a body — which
+is why `prs.sh` needs `REVIEW_BOT_LOGIN`: without knowing whose review to look
+for, there is nothing to read the field off. It says so loudly when unset, since
+silently re-reviewing everything on every run is the expensive failure here.
 
 What that buys: the loop survives running from a different machine or a fresh
-clone, and it self-heals when someone deletes a comment. Delete the comment and
-the PR is simply unreviewed again, which is exactly right.
+clone, and it self-heals when someone deletes a review. Delete it and the PR is
+simply unreviewed again, which is exactly right.
 
 It also rules out a whole class of bug. A local cache that disagrees with GitHub
 produces a pull request that is never reviewed and nobody notices. That failure
 is silent, and silent failures in a tool you stop watching are the ones that
 matter. `prompt.md` forbids skipping from memory for the same reason — an agent
 with its own memory could otherwise "remember" reviewing something and skip the
-marker check.
+lookup entirely.
 
-## Why PR-level and not inline
+## Why inline, and what it cost
 
-Inline comments must anchor to a line inside a diff hunk, so a finding about a
-line the PR did not touch has nowhere to go.
+This file used to argue the opposite, and the argument rested on one claim it
+told you to verify first: that an inline-only review is a review the queue can
+never mark as done, because `gh pr view --json comments` returns the PR-level
+conversation and not the inline review comments, which are a separate collection.
 
-The 422 risk is avoidable and this project used to overstate it. As documented,
-`POST /pulls/{n}/reviews` with a `comments[]` array is all-or-nothing — one bad
-anchor rejects the whole review — while `POST /pulls/{n}/comments` posts one
-comment at a time and fails only that one. The original pipeline used the
-fragile endpoint. That was a choice, not a constraint. Nothing here calls either
-endpoint, so treat that as the reason inline was reconsidered rather than as
-something this code proves.
+That claim was true and irrelevant. It assumed the record had to live in a
+comment body. It does not: `POST /pulls/{n}/reviews` stores the `commit_id` the
+review was written against, and `GET /pulls/{n}/reviews` reads it back. The
+review object is the marker. Once that was checked the whole objection collapsed,
+and with it the reason to parse anything.
 
-What actually settles it is that permalinks make the question moot: a blob URL
-with the head SHA points at any line of any file with no hunk requirement, inside
-a comment that also carries the dedupe marker. Inline would buy anchoring this
-tool already has, and cost the single place the marker can live: `prs.sh` reads
-it through `gh pr view --json comments`, which returns the PR-level conversation
-and not the inline review comments, which are a separate collection. An
-inline-only review is a review the queue can never mark as done. That last point
-is load-bearing — if you intend to add inline comments, verify it first, because
-the whole argument rests on it.
+What inline buys is where a finding lives. A finding in the body is a
+pronouncement with nowhere to answer it; the same finding on the line is a
+conversation the author can argue down in place, and a wrong finding dies faster
+there than anywhere else. That is worth more than the machinery it costs.
 
-The findings that justify this tool are mostly unanchorable anyway — what a
-migration does *not* do, a call site that does *not* write a field, a contract
-question.
+What it costs is real and worth knowing before you change it:
+
+- **The review is all-or-nothing.** One bad anchor — a `line` that is not part of
+  the diff — rejects the entire review with a 422, findings and body together.
+  `POST /pulls/{n}/comments` posts one at a time and fails only the bad one, but
+  it cannot carry a body or a `commit_id`, so it cannot be the queue's record.
+  The prompt absorbs this by treating an unanchorable line as evidence the
+  finding may not belong at all, rather than as an obstacle to route around.
+- **Findings that genuinely cannot anchor still need somewhere to go** — what a
+  migration does *not* do, a call site that does *not* write a field. Those stay
+  in the body with a blob permalink at the full head SHA, which has no hunk
+  requirement. That is the part of the old design that survived intact.
 
 ## Why reviews are closed to one repository
 
@@ -102,6 +112,39 @@ is meant to, and its output format — a numbered `Found N issues:` list with a
 footer and reaction prompt, which reads as tool output and is the opposite of
 what the comment style here is tuned for.
 
+`qodo-ai/pr-agent` (MIT) solves it as software rather than as a prompt, which
+makes it the better place to steal from: its decisions are written down as code
+that had to work. Four of them are here, all as rules:
+
+- **Scoring is its own pass** (Step 3). Its docs state the reason plainly —
+  models "struggle to simultaneously generate high-quality code suggestions and
+  rank them well in a single pass." This prompt already filtered candidates while
+  drafting them, which is the same conflation. The other half of that idea is
+  that findings get scored *together*, because worth is relative: judged alone,
+  almost anything clears the bar. The Anthropic plugin also filters on a score,
+  but folded into one pass; the separation is what is borrowed here.
+- **Degrade an oversized diff in a fixed order** rather than sampling it —
+  deletion-only hunks, then whole deleted files, then everything outside the
+  repo's dominant languages. "Review the highest-risk files" was the old rule and
+  it gave the reviewer no way to decide which those were.
+- **Asymmetric context**: expand to the enclosing function above a hunk, barely
+  anything below it. Its config is literally `patch_extra_lines_before = 5` and
+  `patch_extra_lines_after = 1`, which is a claim about where correctness is
+  decided, and it matches what reading diffs is actually like.
+- **Read the repo's convention files from the default branch, never the PR
+  branch.** In pr-agent this is `repo_context_from_default_branch = true`, a
+  configuration flag. Here it is a rule in the Forbidden list, because the threat
+  is worse for an agent than for a library: a pull request that edits `AGENTS.md`
+  can otherwise instruct the thing reviewing it.
+
+Deliberately not taken: its SHA-256 fingerprinting of inline comments
+(`inline_comment_dedup.py`), which exists because a program cannot read its own
+previous comments and tell whether a new finding is the same defect. An agent
+can, and Step 4 already tells it to. What ported is the observation behind the
+machinery — that a model restates one finding two ways across runs, same defect
+in new prose or same prose with a different suggestion — which is now the rule
+for what counts as "already said" on a `stale` row.
+
 ## Tuning notes
 
 - **Silence is the default.** Zero findings on a small, correct pull request is
@@ -109,14 +152,19 @@ what the comment style here is tuned for.
   request title is the one that teaches people to skip the bot. This rule exists
   because the first comment this tool ever posted was exactly that, and deleting
   it was the most useful thing that happened to the prompt.
-- **150 words** and "no emoji" are load-bearing. Without a hard number the output
-  drifts long; with badges it reads as tool output and gets skipped.
-- **Bold imperative title.** "Decide whether existing rows get backfilled" tells
-  the author what to do. "Existing rows keep `true`" only describes.
-- **`--edit-last` targets the last comment by the authenticated account**, so
-  after switching to the bot identity it does not see comments posted by a
-  human. `prompt.md` pairs it with `--create-if-none` (`gh` 2.62+) so the first
-  bot run on a pull request cannot fail for having nothing to edit.
-- **The marker is versioned** (`mocr:v1`). Changing that string
-  orphans every marker already posted, so those pull requests read as unreviewed
-  and get a second comment. Bump the version only when you mean that.
+- **Length is counted in sentences, not words.** Three per inline comment plus
+  its suggestion block, five for the body. A word budget was the old rule and it
+  measured the wrong thing: the failure is a comment that needs a paragraph of
+  setup to land, and that is a sentence count. "No emoji" and no badges stay
+  load-bearing — with them a review reads as tool output and gets skipped.
+- **A review is never edited.** For a `stale` pull request the prompt files a new
+  one against the current head; the newest review for our login is what the queue
+  reads. Editing would lose the history the author already replied to.
+- **A suggestion block must have been run.** It is the only thing in a review
+  that applies with one click, skipping the author's judgment entirely, so it is
+  the only thing that has to be right before it is written. When the defect is
+  clear but the replacement is not, that is a question.
+- **The legacy marker is versioned** (`mocr:v1`) and is now read-only. `prs.sh`
+  still falls back to it so pull requests reviewed before the reviews-API switch
+  are not all re-reviewed once; nothing writes it any more. Delete the fallback
+  when no open pull request still carries one.

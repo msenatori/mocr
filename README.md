@@ -53,10 +53,11 @@ Steps 1 to 4 are done once and take about twenty minutes, most of it the App.
 
 - [Requirements](#requirements) — what you need before you start
 - [Install](#install) — the six steps, in order
-- [Leaving it running](#leaving-it-running) — the loop, and how to pick an interval
+- [Leaving it running](#leaving-it-running) — the loop, and how to pick an interval; [headless with Codex](examples/headless-codex/)
 - [Everyday use](#everyday-use) — the flags you will actually type
 - [Which repositories get reviewed](#which-repositories-get-reviewed) — explicit or scanned
 - [How much gets reviewed per run](#how-much-gets-reviewed-per-run) — one at a time, at random
+- [Pull requests that are never worth a run](#pull-requests-that-are-never-worth-a-run) — dropping bot noise before it costs a tick
 - [The review log](#the-review-log) — a list of what it has reviewed
 - [How deduplication works](#how-deduplication-works) — the marker, and why there is no database
 - [Posting identity](#posting-identity) — creating the GitHub App
@@ -244,6 +245,11 @@ each one finds `config.env` next to its own real file.
 `prompt.md` deliberately does not loop itself. The reasoning is in
 [DESIGN](DESIGN.md#why-the-prompt-does-not-loop-itself).
 
+To run it with nobody at the console — a cron entry on a server, Codex as the
+agent, a second model checking every finding and suggestion before anything is
+posted — see [examples/headless-codex](examples/headless-codex/). It is an
+example, not a dependency: copy what fits.
+
 ### Choosing the interval
 
 With `REVIEW_LIMIT=1` the interval is your throughput: one pull request per tick,
@@ -315,6 +321,31 @@ prs.sh -u -O      # oldest first, overriding config.env for this run
 prs.sh -u -n 3    # three this run
 ```
 
+## Pull requests that are never worth a run
+
+With `REVIEW_LIMIT=1`, a dependency bump picked out of the queue costs you the
+whole tick. The prompt already tells the reviewer to skip machine-generated pull
+requests, but it can only do that after it has been handed the row and read the
+diff — the run is spent either way.
+
+Three filters in `config.env` drop them before that, for free:
+
+```sh
+REVIEW_IGNORE_AUTHORS=dependabot,renovate   # logins; the [bot] suffix is optional
+REVIEW_IGNORE_LABELS=dependencies,no-review # any one match drops the PR
+REVIEW_IGNORE_TITLE=^(chore\(deps\)|\[Auto\]) # one case-insensitive regex
+```
+
+All three are empty by default, because what counts as noise is a property of
+your repositories and a guessed default that silently drops a real pull request
+costs more than the runs it saves. `prs.sh -A` ignores them along with every
+other filter, which is how you check what they are hiding:
+
+```sh
+prs.sh -A                    # everything, no filters at all
+prs.sh -u -a dependabot      # override just this run
+```
+
 ## The review log
 
 Every published review appends one line to `reviews/reviewed.txt`:
@@ -341,16 +372,22 @@ two disagree.
 
 ## How deduplication works
 
-Every posted comment starts with a hidden marker:
+Nothing is parsed and no marker is written. GitHub already stores the commit each
+review was filed against, so `prs.sh -c` reads that field back off the newest
+review published by `REVIEW_BOT_LOGIN` and reports `none`, `stale` (reviewed at
+an older commit), or `current`.
 
-```html
-<!-- mocr:v1 sha=<head> -->
-```
+That is why `REVIEW_BOT_LOGIN` matters: without knowing whose review to look for
+there is no field to read, and every pull request would be offered again on every
+run. `prs.sh` warns on stderr when it is unset rather than failing quietly.
 
-`prs.sh -c` reads it back and reports `none`, `stale` (reviewed at an older
-commit), or `current`. **GitHub is the only state store** — no local database, no
-cache. That survives running from another machine or a fresh clone, and it
-self-heals if someone deletes a comment.
+**GitHub is the only state store** — no local database, no cache. That survives
+running from another machine or a fresh clone, and it self-heals if someone
+deletes a review: the pull request is simply unreviewed again.
+
+Reviews published before this switch carried a hidden `<!-- mocr:v1 sha=... -->`
+marker in a PR-level comment. `prs.sh` still falls back to reading it so those
+pull requests are not all reviewed a second time, but nothing writes it any more.
 
 ## Posting identity
 
