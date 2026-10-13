@@ -274,7 +274,7 @@ what is wrong but not exactly what replaces the line, that is a question, not a
 suggestion.
 
     ```suggestion
-    if (claim.count !== group.orderPaymentIds.length) return { ...base, status: "skipped" };
+    if (results.length !== requests.length) return { ...base, status: "skipped" };
     ```
 
 The block replaces the anchored line, so its content must be the complete

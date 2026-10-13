@@ -5,6 +5,9 @@ each pull request to [Codex](https://github.com/openai/codex) and posts what
 survives. Nothing in the main project depends on it. It is one way to run the
 prompt, not part of the prompt.
 
+[EXPERIENCE.md](EXPERIENCE.md) has what the first day of running it looked
+like: the numbers, what the second stage caught, and what broke along the way.
+
 The interactive loop in the main README keeps a person next to every review.
 This one does not, so it adds what that person used to do: a second model reads
 the draft before it is posted, and the script publishes, never the agent.
