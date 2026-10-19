@@ -2,8 +2,15 @@
 # Run one pass of the review loop with Codex, unattended.
 #
 # Usage:
-#   ./codex-run.sh            # review whatever `prs.sh -u -j` returns
-#   ./codex-run.sh --dry-run  # print the queue and exit
+#   ./codex-run.sh                 # requests first, then whatever `prs.sh -u -j` returns
+#   ./codex-run.sh --pr <url>...   # queue these pull requests as requests, then run
+#   ./codex-run.sh --requests-only # review the queued requests and nothing else
+#   ./codex-run.sh --dry-run       # print the queue and the pending requests, then exit
+#
+# A request is a pull request someone asked for by URL: a file holding the URL
+# in $MOCR_RUN_DIR/requests/. Requests skip every queue filter and are reviewed
+# even when the bot already reviewed that head. inbox.py writes them from a web
+# form; `--pr` writes them from the command line.
 #
 # Meant for cron on a headless Linux machine:
 #   7,37 * * * * $HOME/mocr/examples/headless-codex/codex-run.sh >> $HOME/mocr-run/cron.log 2>&1
@@ -65,14 +72,35 @@ codex_opts=(--sandbox workspace-write -c sandbox_workspace_write.network_access=
 [ -n "${MOCR_CODEX_EFFORT:-}" ] && codex_opts+=(-c "model_reasoning_effort=$MOCR_CODEX_EFFORT")
 
 DRY_RUN=false
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+REQUESTS_ONLY=false
+new_requests=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)       DRY_RUN=true ;;
+    --requests-only) REQUESTS_ONLY=true ;;
+    --pr)            shift; new_requests+=("${1:-}") ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 if [ -z "$REVIEW_BOT_LOGIN" ]; then
   echo "REVIEW_BOT_LOGIN is unset; this runner needs it to confirm what it posted" >&2
   exit 1
 fi
 
-mkdir -p "$RUN_DIR/logs"
+REQ_DIR="$RUN_DIR/requests"
+mkdir -p "$RUN_DIR/logs" "$REQ_DIR/done"
+
+# Written before the lock: if a pass is already running, it picks them up when
+# it gets to the end of its own work.
+for url in ${new_requests[@]+"${new_requests[@]}"}; do
+  if [[ ! "$url" =~ ^https://github\.com/[^/]+/[^/]+/pull/[0-9]+ ]]; then
+    echo "not a pull request URL: $url" >&2
+    exit 2
+  fi
+  printf '%s\n' "$url" > "$REQ_DIR/$(date +%s%N).url"
+done
 
 # One pass at a time: a slow review must not overlap the next cron tick.
 exec 9>"$RUN_DIR/.lock"
@@ -107,14 +135,11 @@ $1
 EOF
 }
 
-token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; exit 1; }
-queue="$(GH_TOKEN="$token" prs.sh -u -j)" || { echo "$(stamp) prs.sh failed"; exit 1; }
-count="$(jq length <<<"$queue")"
-echo "$(stamp) queue: $count"
-$DRY_RUN && { jq . <<<"$queue"; exit 0; }
-[ "$count" -gt 0 ] || exit 0
-
-jq -c '.[]' <<<"$queue" | while read -r row; do
+# Reviews one row of `prs.sh -j`. Returns 0 when a review was posted, 1 when
+# this PR failed, 2 when the pass itself cannot go on (no bot token).
+review_row() {
+  local row="$1" repo pr head checkout name work tree log token auth deps_note \
+        row_here status vstatus kept drafted url log_dir
   repo="$(jq -r .repo <<<"$row")"
   pr="$(jq -r .pr <<<"$row")"
   head="$(jq -r .head <<<"$row")"
@@ -132,7 +157,7 @@ jq -c '.[]' <<<"$queue" | while read -r row; do
 
   # Fresh token per PR: a review and its verification can outlast the hour a
   # token lives. It goes in a header for git, never into the remote URL.
-  token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; cleanup; exit 1; }
+  token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; cleanup; return 2; }
   auth="Authorization: Basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\n')"
 
   echo "$(stamp) $repo#$pr: start ($(jq -r .review <<<"$row"), head ${head:0:8})"
@@ -143,7 +168,7 @@ jq -c '.[]' <<<"$queue" | while read -r row; do
      || ! git -C "$tree" remote remove origin >>"$log" 2>&1; then
     echo "$(stamp) $repo#$pr: could not check out $head, skipped, log $log"
     cleanup
-    continue
+    return 1
   fi
 
   deps_note="Its dependencies are installed, so you can run the typecheck and tests there."
@@ -165,6 +190,12 @@ $(tail -20 "$work/install.log")"
     echo "You are running the review prompt below for one pull request. Skip Step 1."
     echo
     row_context "$row_here" "$head" "$deps_note"
+    if [ "$(jq -r '.requested // false' <<<"$row")" = true ]; then
+      cat <<'EOF'
+
+A person asked for this review by URL, so it runs whatever `review` says, even when the bot already reviewed this head. If the bot has reviewed this PR before, read those reviews and their inline comments first, review the whole change again, and put only what is new in this review: a finding the bot already posted, on the same file, line and defect, is not repeated.
+EOF
+    fi
     cat <<'EOF'
 
 Run Steps 2 and 3 in full. For Step 4, build the review JSON exactly as it describes, but do NOT post it and do not run bot-token.sh: write it to ./review.json and stop. Another stage verifies and publishes it. Then print the Step 3 score table for every candidate, including the ones you dropped, each with its score and one-line reason.
@@ -187,13 +218,13 @@ EOF
        "$work/review.json" >/dev/null 2>&1; then
     echo "$(stamp) $repo#$pr: review stage exit $status, no valid review.json, NOTHING POSTED, log $log"
     cleanup
-    continue
+    return 1
   fi
 
   # Stage 2 — verify, on a clean tree so stage 1's experiments cannot leak in.
   git -C "$tree" reset -q --hard "$head" && git -C "$tree" clean -fdq
   cp "$work/review.json" "$work/review.draft.json"
-  token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; cleanup; exit 1; }
+  token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; cleanup; return 2; }
   {
     echo "You are the second reader of a code review that has not been published yet. Another model wrote ./review.json for the pull request below; your job is to make sure everything in it is true and that every suggestion works, before anyone sees it."
     echo
@@ -225,20 +256,77 @@ EOF
        "$work/review.verified.json" >/dev/null 2>&1; then
     echo "$(stamp) $repo#$pr: verify stage exit $vstatus, no valid review.verified.json, NOTHING POSTED, log $log"
     cleanup
-    continue
+    return 1
   fi
   kept="$(jq '.comments | length' "$work/review.verified.json")"
   drafted="$(jq '.comments | length' "$work/review.draft.json")"
   { echo; echo "=== published ==="; cat "$work/review.verified.json"; } >> "$log"
 
   # Stage 3 — publish, as the bot, in the same command that mints the token.
-  if GH_TOKEN="$(bot-token.sh)" gh api "repos/$repo/pulls/$pr/reviews" --method POST \
-       --input "$work/review.verified.json" --jq .html_url >> "$log" 2>&1; then
-    echo "$(stamp) $repo#$pr: posted, $kept of $drafted findings survived verification, log $log"
+  if url="$(GH_TOKEN="$(bot-token.sh)" gh api "repos/$repo/pulls/$pr/reviews" --method POST \
+       --input "$work/review.verified.json" --jq .html_url 2>>"$log")"; then
+    echo "$url" >> "$log"
+    echo "$(stamp) $repo#$pr: posted, $kept of $drafted findings survived verification, $url, log $log"
     log_dir="$(prs.sh --log-dir)"
     [ -n "$log_dir" ] && mkdir -p "$log_dir" && echo "$repo#$pr" >> "$log_dir/reviewed.txt"
   else
     echo "$(stamp) $repo#$pr: POST FAILED (see the end of the log), log $log"
+    cleanup
+    return 1
   fi
   cleanup
-done
+}
+
+# Every open PR in the configured repositories, unfiltered, with its review
+# state. Requests are matched against it, so a URL outside those repositories
+# goes nowhere.
+all_open() {
+  GH_TOKEN="$(bot-token.sh)" prs.sh -A -c -j
+}
+
+# Reviews the queued requests, oldest first, until none is left; including any
+# that arrive while one is running.
+drain_requests() {
+  local file url repo pr row
+  while :; do
+    file="$(ls "$REQ_DIR"/*.url 2>/dev/null | head -1)"
+    [ -n "$file" ] || return 0
+    url="$(head -1 "$file")"
+    repo="$(sed -E 's#^https://github\.com/([^/]+/[^/]+)/pull/.*#\1#' <<<"$url")"
+    pr="$(sed -E 's#^https://github\.com/[^/]+/[^/]+/pull/([0-9]+).*#\1#' <<<"$url")"
+    row="$(all_open | jq -c --arg r "$repo" --argjson n "$pr" \
+            '[.[] | select((.repo | ascii_downcase) == ($r | ascii_downcase) and .pr == $n)][0] // empty' 2>/dev/null)"
+    mv "$file" "$REQ_DIR/done/"
+    if [ -z "$row" ]; then
+      echo "$(stamp) $repo#$pr: requested, but it is not an open PR in a configured repository; ignored"
+      continue
+    fi
+    echo "$(stamp) $repo#$pr: requested"
+    review_row "$(jq -c '.requested = true' <<<"$row")" </dev/null
+    [ $? -eq 2 ] && return 2
+  done
+}
+
+if $DRY_RUN; then
+  echo "requests pending: $(ls "$REQ_DIR"/*.url 2>/dev/null | wc -l)"
+  cat "$REQ_DIR"/*.url 2>/dev/null
+fi
+
+if ! $DRY_RUN; then
+  drain_requests || exit 1
+  $REQUESTS_ONLY && exit 0
+fi
+
+token="$(bot-token.sh)" || { echo "$(stamp) bot-token.sh failed; stopping"; exit 1; }
+queue="$(GH_TOKEN="$token" prs.sh -u -j)" || { echo "$(stamp) prs.sh failed"; exit 1; }
+count="$(jq length <<<"$queue")"
+echo "$(stamp) queue: $count"
+$DRY_RUN && { jq . <<<"$queue"; exit 0; }
+
+while read -r row; do
+  review_row "$row" </dev/null
+  [ $? -eq 2 ] && exit 1
+done < <(jq -c '.[]' <<<"$queue")
+
+# Whatever was requested while the queue was being reviewed.
+drain_requests || exit 1

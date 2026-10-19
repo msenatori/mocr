@@ -1,0 +1,22 @@
+# A user unit for inbox.py. Copy it to ~/.config/systemd/user/, adjust the paths
+# and the environment to match your cron entry, then:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now mocr-inbox
+#
+# Without lingering the unit stops when you log out: `loginctl enable-linger`.
+[Unit]
+Description=mocr inbox: queue pull requests for the headless runner
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/mocr/examples/headless-codex/inbox.py
+Environment=MOCR_RUN_DIR=%h/mocr-run
+Environment=MOCR_INBOX_BIND=127.0.0.1
+Environment=MOCR_INBOX_PORT=8765
+# Environment=MOCR_INBOX_TOKEN=...   better: EnvironmentFile=%h/.config/mocr/inbox.env (chmod 600)
+# Environment=MOCR_CODEX_MODEL=...   the same variables the cron entry sets
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
