@@ -201,11 +201,23 @@ LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f7f5;color:#1d1d1b;font:15px system-ui,sans-serif}
 @media (prefers-color-scheme:dark){body{background:#141413;color:#ececea}input{background:#1c1c1b;color:#ececea}}
 form{display:flex;gap:8px;padding:16px}input{width:min(360px,70vw);padding:9px;border:1px solid #8884;border-radius:8px}
-button{background:#2f5bd3;color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600}</style></head>
-<body><form method="post" action="/login"><input type="password" name="token" placeholder="access key" autofocus required>
-<button>Enter</button></form></body></html>"""
+button{background:#2f5bd3;color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600}
+p{margin:0 16px;color:#b3261e;text-align:center}</style></head>
+<body><div>__ERROR__<form method="post" action="/login"><input type="password" name="token" placeholder="access key" autofocus required>
+<button>Enter</button></form></div></body></html>"""
 
 COOKIE = "mocr_inbox"
+
+
+def login_page(error: str = "") -> str:
+    return LOGIN.replace("__ERROR__", f"<p>{error}</p>" if error else "")
+
+
+def typed_key(raw: str) -> str:
+    """The key as typed, forgiving what copying it from the env file drags along:
+    surrounding whitespace and the `MOCR_INBOX_TOKEN=` prefix."""
+    key = raw.strip()
+    return key.split("=", 1)[1].strip() if key.startswith("MOCR_INBOX_TOKEN=") else key
 
 
 def authorized(headers) -> bool:
@@ -263,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 self._send(401, "{}", "application/json")
             else:
-                self._send(401, LOGIN)
+                self._send(401, login_page())
             return
         if path == "/api/status":
             self._send(200, json.dumps(status()), "application/json")
@@ -278,17 +290,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == "/login":
-            if TOKEN and hmac.compare_digest(self._form().get("token", [""])[0], TOKEN):
+            if TOKEN and hmac.compare_digest(typed_key(self._form().get("token", [""])[0]), TOKEN):
                 self._redirect("/", f"{COOKIE}={TOKEN}; Max-Age=2592000; Path=/; HttpOnly; Secure; SameSite=Strict")
             else:
                 time.sleep(1)  # makes guessing slow; the key is long enough that this is only manners
-                self._send(401, LOGIN)
+                self._send(401, login_page("That key is not right."))
             return
         if path != "/requests":
             self._send(404, "not found", "text/plain")
             return
         if not authorized(self.headers):
-            self._send(401, LOGIN)
+            self._send(401, login_page())
             return
         form = self._form()
         queued, rejected = enqueue(form.get("links", [""])[0])
