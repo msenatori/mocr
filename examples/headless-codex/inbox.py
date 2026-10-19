@@ -15,14 +15,15 @@ Environment:
     MOCR_RUN_DIR       the runner's directory          (default: $HOME/mocr-run)
     MOCR_INBOX_BIND    address to listen on            (default: 127.0.0.1)
     MOCR_INBOX_PORT    port                            (default: 8765)
-    MOCR_INBOX_TOKEN   if set, required to submit      (default: unset)
+    MOCR_INBOX_TOKEN   if set, required for every page (default: unset)
 
 Every other variable (MOCR_CODEX_MODEL, ...) is passed through to the runner,
 so give this process the same environment as the cron entry.
 
-There is no login. A request can only review an open PR in a repository the
-runner is already configured for, but it does spend model time: bind it to
-localhost or a private network, and set MOCR_INBOX_TOKEN if others share it.
+With MOCR_INBOX_TOKEN set, every page asks for it once and keeps it in a
+secure cookie for 30 days. Without it there is no login at all, so only bind to
+localhost then. Put a long random value in a chmod 600 environment file
+(`openssl rand -hex 32`) before exposing the page through a tunnel or a proxy.
 """
 
 import fcntl
@@ -169,7 +170,7 @@ li:first-child{border-top:0}
 __FLASH__
 <form class="card" method="post" action="/requests">
 <textarea name="links" placeholder="https://github.com/owner/repo/pull/123" required></textarea>
-<div class="row">__TOKEN_FIELD__<button type="submit">Review now</button></div>
+<div class="row"><button type="submit">Review now</button></div>
 </form>
 <div class="card"><div class="state" id="state"></div></div>
 <div class="card"><h2>Pending</h2><ul id="pending"></ul></div>
@@ -195,6 +196,28 @@ refresh(); setInterval(refresh,5000);
 </script></body></html>"""
 
 
+LOGIN = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>mocr inbox</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f7f5;color:#1d1d1b;font:15px system-ui,sans-serif}
+@media (prefers-color-scheme:dark){body{background:#141413;color:#ececea}input{background:#1c1c1b;color:#ececea}}
+form{display:flex;gap:8px;padding:16px}input{width:min(360px,70vw);padding:9px;border:1px solid #8884;border-radius:8px}
+button{background:#2f5bd3;color:#fff;border:0;border-radius:8px;padding:9px 16px;font-weight:600}</style></head>
+<body><form method="post" action="/login"><input type="password" name="token" placeholder="access key" autofocus required>
+<button>Enter</button></form></body></html>"""
+
+COOKIE = "mocr_inbox"
+
+
+def authorized(headers) -> bool:
+    if not TOKEN:
+        return True
+    for part in (headers.get("Cookie") or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == COOKIE and hmac.compare_digest(value, TOKEN):
+            return True
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: str, ctype: str = "text/html; charset=utf-8") -> None:
         data = body.encode()
@@ -206,12 +229,29 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _page(self, flash: str = "") -> str:
-        token_field = '<input type="password" name="token" placeholder="token" required>' if TOKEN else ""
         flash_html = f'<p class="flash">{flash}</p>' if flash else ""
-        return PAGE.replace("__FLASH__", flash_html).replace("__TOKEN_FIELD__", token_field)
+        return PAGE.replace("__FLASH__", flash_html)
+
+    def _redirect(self, location: str, cookie: str = "") -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _form(self) -> dict:
+        length = min(int(self.headers.get("Content-Length") or 0), 64 * 1024)
+        return parse_qs(self.rfile.read(length).decode(errors="replace"))
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if not authorized(self.headers):
+            if path == "/api/status":
+                self._send(401, "{}", "application/json")
+            else:
+                self._send(401, LOGIN)
+            return
         if path == "/api/status":
             self._send(200, json.dumps(status()), "application/json")
         elif path == "/":
@@ -221,14 +261,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/requests":
+        path = urlparse(self.path).path
+        if path == "/login":
+            if TOKEN and hmac.compare_digest(self._form().get("token", [""])[0], TOKEN):
+                self._redirect("/", f"{COOKIE}={TOKEN}; Max-Age=2592000; Path=/; HttpOnly; Secure; SameSite=Strict")
+            else:
+                time.sleep(1)  # makes guessing slow; the key is long enough that this is only manners
+                self._send(401, LOGIN)
+            return
+        if path != "/requests":
             self._send(404, "not found", "text/plain")
             return
-        length = min(int(self.headers.get("Content-Length") or 0), 64 * 1024)
-        form = parse_qs(self.rfile.read(length).decode(errors="replace"))
-        if TOKEN and not hmac.compare_digest(form.get("token", [""])[0], TOKEN):
-            self._send(403, self._page("Wrong token. Nothing was queued."))
+        if not authorized(self.headers):
+            self._send(401, LOGIN)
             return
+        form = self._form()
         queued, rejected = enqueue(form.get("links", [""])[0])
         parts = []
         if queued:
@@ -238,10 +285,7 @@ class Handler(BaseHTTPRequestHandler):
         if not parts:
             parts.append("Nothing new to queue: no pull request URL, or it is already pending.")
         # Post/redirect/get, so reloading the page does not queue the same links again.
-        self.send_response(303)
-        self.send_header("Location", "/?m=" + quote(" ".join(parts)))
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        self._redirect("/?m=" + quote(" ".join(parts)))
 
     def log_message(self, fmt: str, *args) -> None:
         pass
