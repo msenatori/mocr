@@ -244,7 +244,20 @@ class Handler(BaseHTTPRequestHandler):
         length = min(int(self.headers.get("Content-Length") or 0), 64 * 1024)
         return parse_qs(self.rfile.read(length).decode(errors="replace"))
 
+    def _plain_http(self) -> bool:
+        """Behind a TLS-terminating proxy, sends plain-HTTP visitors to HTTPS: the
+        key's cookie is Secure, so a login over HTTP would never stick."""
+        if self.headers.get("X-Forwarded-Proto") != "http" or not self.headers.get("Host"):
+            return False
+        self.send_response(301)
+        self.send_header("Location", f"https://{self.headers['Host']}{self.path}")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
     def do_GET(self) -> None:
+        if self._plain_http():
+            return
         path = urlparse(self.path).path
         if not authorized(self.headers):
             if path == "/api/status":
@@ -261,6 +274,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
 
     def do_POST(self) -> None:
+        if self._plain_http():
+            return
         path = urlparse(self.path).path
         if path == "/login":
             if TOKEN and hmac.compare_digest(self._form().get("token", [""])[0], TOKEN):
